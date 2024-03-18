@@ -3,15 +3,29 @@
 // Copyright Tock Contributors 2022.
 
 //! Platform Level Interrupt Control peripheral driver.
-
 use kernel::utilities::cells::VolatileCell;
 use kernel::utilities::registers::interfaces::{Readable, Writeable};
 use kernel::utilities::registers::LocalRegisterCopy;
 use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite};
 use kernel::utilities::StaticRef;
 
+use kernel::threadlocal::{NonReentrant, ThreadId, ThreadLocal, ThreadLocalAccess};
+
 #[repr(C)]
-pub struct PlicRegisters {
+pub struct PlicAux {
+    /// Priority Threshold Register
+    threshold: ReadWrite<u32, priority::Register>,
+    /// Claim/Complete Register
+    claim: ReadWrite<u32>,
+    _reserved0: [u8; 4088],
+}
+
+#[repr(C)]
+pub struct PlicRegisters<const NUM_CONTEXTS: usize>
+where
+    // Ensure the following const expression is valid
+    [(); 2088960 - NUM_CONTEXTS * 128]: Sized,
+{
     /// Interrupt Priority Register
     _reserved0: u32,
     priority: [ReadWrite<u32, priority::Register>; 51],
@@ -20,13 +34,28 @@ pub struct PlicRegisters {
     pending: [ReadOnly<u32>; 2],
     _reserved2: [u8; 4088],
     /// Interrupt Enable Register
-    enable: [ReadWrite<u32>; 2],
-    _reserved3: [u8; 2088952],
-    /// Priority Threshold Register
-    threshold: ReadWrite<u32, priority::Register>,
-    /// Claim/Complete Register
-    claim: ReadWrite<u32>,
+    enable: [[ReadWrite<u32>; 32]; NUM_CONTEXTS],
+    _reserved3: [u8; 2088960 - NUM_CONTEXTS * 128],
+    /// Aux: Priority and Claim/Complete Register
+    aux: [PlicAux; NUM_CONTEXTS],
 }
+
+// #[repr(C)]
+// pub struct PlicRegisters
+// {
+//     /// Interrupt Priority Register
+//     _reserved0: u32,
+//     priority: [ReadWrite<u32, priority::Register>; 51],
+//     _reserved1: [u8; 3888],
+//     /// Interrupt Pending Register
+//     pending: [ReadOnly<u32>; 2],
+//     _reserved2: [u8; 4088],
+//     /// Interrupt Enable Register
+//     enable: [[ReadWrite<u32>; 32]; 15872],
+//     _reserved3: [u8; 57344],
+//     /// Aux: Priority and Claim/Complete Register
+//     aux: [PlicAux; 15872],
+// }
 
 register_bitfields![u32,
     priority [
@@ -34,13 +63,39 @@ register_bitfields![u32,
     ]
 ];
 
-pub struct Plic {
-    registers: StaticRef<PlicRegisters>,
+// // pub type PlicSaved<const NUM_CONTEXTS: usize> = ThreadLocal<NUM_CONTEXTS, [VolatileCell<LocalRegisterCopy<u32>>; 2]>;
+// #[derive(Copy, Clone)]
+// #[repr(transparent)]
+// struct PlicSaved {
+//     holder: [u32; 2],
+// }
+
+// impl PlicSaved {
+//     const unsafe fn new(val: u32) -> PlicSaved {
+//         Self { holder: [val; 2] }
+//     }
+
+//     fn get_slice(&self) -> &'_ [VolatileCell<LocalRegisterCopy<u32>>; 2] {
+//         unsafe {
+//             core::mem::transmute(&self.holder)
+//         }
+//     }
+// }
+
+
+pub struct Plic<const NUM_CONTEXTS: usize>
+where
+    [(); 2088960 - NUM_CONTEXTS * 128]: Sized
+{
+    registers: StaticRef<PlicRegisters<NUM_CONTEXTS>>,
     saved: [VolatileCell<LocalRegisterCopy<u32>>; 2],
 }
 
-impl Plic {
-    pub const fn new(base: StaticRef<PlicRegisters>) -> Self {
+impl<const NUM_CONTEXTS: usize> Plic<NUM_CONTEXTS>
+where
+    [(); 2088960 - NUM_CONTEXTS * 128]: Sized
+{
+    pub const fn new(base: StaticRef<PlicRegisters<NUM_CONTEXTS>>) -> Self {
         Plic {
             registers: base,
             saved: [
@@ -57,21 +112,25 @@ impl Plic {
     /// 9.4 p.114 writes.)
     ///
     /// [`E31 core manual`]: https://sifive.cdn.prismic.io/sifive/c29f9c69-5254-4f9a-9e18-24ea73f34e81_e31_core_complex_manual_21G2.pdf
-    pub fn clear_all_pending(&self) {
+    pub fn clear_all_pending(&self, context_id: usize) {
+        // TODO: Can we move it to compile-time?
+        let _ : () = assert!(context_id < NUM_CONTEXTS);
         let regs = self.registers;
 
         loop {
-            let id = regs.claim.get();
+            let id = regs.aux[context_id].claim.get();
             if id == 0 {
                 break;
             }
-            regs.claim.set(id);
+            regs.aux[context_id].claim.set(id);
         }
     }
 
     /// Enable all interrupts.
-    pub fn enable_all(&self) {
-        for enable in self.registers.enable.iter() {
+    pub fn enable_all(&self, context_id: usize) {
+        let _ : () = assert!(context_id < NUM_CONTEXTS);
+
+        for enable in self.registers.enable[context_id].iter() {
             enable.set(0xFFFF_FFFF);
         }
 
@@ -80,14 +139,15 @@ impl Plic {
         for priority in self.registers.priority.iter() {
             priority.write(priority::Priority.val(4));
         }
-
         // Accept all interrupts.
-        self.registers.threshold.write(priority::Priority.val(0));
+        self.registers.aux[context_id].threshold.write(priority::Priority.val(0));
     }
 
     /// Disable all interrupts.
-    pub fn disable_all(&self) {
-        for enable in self.registers.enable.iter() {
+    pub fn disable_all(&self, context_id: usize) {
+        // TODO: make it compile time check
+        let _ : () = assert!(context_id < NUM_CONTEXTS);
+        for enable in self.registers.enable[context_id].iter() {
             enable.set(0);
         }
     }
@@ -95,8 +155,11 @@ impl Plic {
     /// Get the index (0-256) of the lowest number pending interrupt, or `None` if
     /// none is pending. RISC-V PLIC has a "claim" register which makes it easy
     /// to grab the highest priority pending interrupt.
-    pub fn next_pending(&self) -> Option<u32> {
-        let claim = self.registers.claim.get();
+    pub fn next_pending(&self, context_id: usize) -> Option<u32> {
+        // TODO: make it compile time check
+        let _ : () = assert!(context_id < NUM_CONTEXTS);
+
+        let claim = self.registers.aux[context_id].claim.get();
         if claim == 0 {
             None
         } else {
@@ -130,15 +193,16 @@ impl Plic {
                 return Some(saved.trailing_zeros() + (i as u32 * 32));
             }
         }
-
         None
     }
 
     /// Signal that an interrupt is finished being handled. In Tock, this should be
     /// called from the normal main loop (not the interrupt handler).
     /// Interrupts must be disabled before this is called.
-    pub unsafe fn complete(&self, index: u32) {
-        self.registers.claim.set(index);
+    pub unsafe fn complete(&self, context_id: usize, index: u32) {
+        let _ : () = assert!(context_id < NUM_CONTEXTS);
+
+        self.registers.aux[context_id].claim.set(index);
 
         let offset = usize::from(index >= 32);
         let irq = index % 32;
@@ -152,8 +216,9 @@ impl Plic {
 
     /// This is a generic implementation. There may be board specific versions as
     /// some platforms have added more bits to the `mtvec` register.
-    pub fn suppress_all(&self) {
+    pub fn suppress_all(&self, context_id: usize) {
+        let _ : () = assert!(context_id < NUM_CONTEXTS);
         // Accept all interrupts.
-        self.registers.threshold.write(priority::Priority.val(0));
+        self.registers.aux[context_id].threshold.write(priority::Priority.val(0));
     }
 }

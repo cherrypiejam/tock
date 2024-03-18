@@ -49,6 +49,7 @@ members = [
     "boards/teensy40",
     "boards/nano33ble",
     "boards/qemu_rv32_virt",
+    "boards/qemu_rv32_virt_smp",
     "boards/swervolf",
     "boards/weact_f401ccu6/",
     "capsules/aes_gcm",
