@@ -109,7 +109,7 @@ pub trait IoWrite {
 /// the system once this function returns.
 ///
 /// **NOTE:** The supplied `writer` must be synchronous.
-pub unsafe fn panic_print<W: Write + IoWrite, C: Chip, PP: ProcessPrinter>(
+pub unsafe fn panic_print<W: Write + IoWrite, C: Chip + ?Sized, PP: ProcessPrinter>(
     writer: &mut W,
     panic_info: &PanicInfo,
     nop: &dyn Fn(),
@@ -138,7 +138,7 @@ pub unsafe fn panic_print<W: Write + IoWrite, C: Chip, PP: ProcessPrinter>(
 /// Tock default panic routine.
 ///
 /// **NOTE:** The supplied `writer` must be synchronous.
-pub unsafe fn panic<L: hil::led::Led, W: Write + IoWrite, C: Chip, PP: ProcessPrinter>(
+pub unsafe fn panic<L: hil::led::Led, W: Write + IoWrite, C: Chip + ?Sized, PP: ProcessPrinter>(
     leds: &mut [&L],
     writer: &mut W,
     panic_info: &PanicInfo,
@@ -186,7 +186,7 @@ pub unsafe fn panic_banner<W: Write>(writer: &mut W, panic_info: &PanicInfo) {
 /// Print current machine (CPU) state.
 ///
 /// **NOTE:** The supplied `writer` must be synchronous.
-pub unsafe fn panic_cpu_state<W: Write, C: Chip>(
+pub unsafe fn panic_cpu_state<W: Write, C: Chip + ?Sized>(
     chip: &'static Option<&'static C>,
     writer: &mut W,
 ) {
