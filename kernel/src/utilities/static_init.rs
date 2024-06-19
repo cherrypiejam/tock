@@ -77,7 +77,7 @@ macro_rules! thread_local_static {
 
 #[macro_export]
 macro_rules! thread_local_static_finalize {
-    ($VAR:ident, $ID:ty $(,)?) => {{
+    ($VAR:expr, $ID:ty $(,)?) => {{
         use $crate::threadlocal::ConstThreadId;
         $crate::utilities::static_init::static_buf_check_used($VAR.1.get_mut_static(ConstThreadId::<$ID>::new()));
         let mut buf = $VAR.0.get_mut_static(ConstThreadId::<$ID>::new());
@@ -87,7 +87,7 @@ macro_rules! thread_local_static_finalize {
 
 #[macro_export]
 macro_rules! thread_local_static_access {
-    ($VAR:ident, $ID:expr $(,)?) => {{
+    ($VAR:expr, $ID:expr $(,)?) => {{
         use $crate::threadlocal::ThreadLocalAccess;
         match $VAR.1.get_mut($ID).map(|a| a.enter_nonreentrant(|&mut x| x)) {
             Some(true) => {
@@ -113,7 +113,7 @@ macro_rules! thread_local_static_access {
 //                 [core::mem::MaybeUninit<T>; 1]
 //             >(core::mem::MaybeUninit::uninit())
 //         );
-//         let a = 
+//         let a =
 //             crate::threadlocal::ThreadLocal::new(
 //                 core::mem::transmute::<core::mem::MaybeUninit<[T; NUM_THREADS]>, [core::mem::MaybeUninit<T>; NUM_THREADS]>(
 //                     core::mem::MaybeUninit::uninit()

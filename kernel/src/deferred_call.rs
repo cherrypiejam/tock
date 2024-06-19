@@ -113,6 +113,7 @@ pub const DEFAULT_DEFERRED_CALL_STATE: ThreadLocalDeferredCallState = ThreadLoca
     ctr: 0,
     bitmask: 0,
     defcalls: [None; 32],
+    defcall_thread: (false, None),
 };
 
 #[derive(Copy, Clone)]
@@ -129,6 +130,8 @@ pub struct ThreadLocalDeferredCallState {
     // This is a 256 byte array, but at least resides in .bss
     // TODO: is still still true?
     defcalls: [Option<DynDefCallRef<'static>>; 32],
+    /// inter-thread defcalls
+    defcall_thread: (bool, Option<DynDefCallRef<'static>>),
 }
 
 static DEFAULT_DEFCALL_STATE: ThreadLocal::<0, ThreadLocalDeferredCallState> = ThreadLocal::new([]);
@@ -144,6 +147,63 @@ unsafe fn with_defcall_state_panic<R, F: FnOnce(&mut ThreadLocalDeferredCallStat
 	.get_mut()
 	.expect("Current thread does not have access to a ThreadLocalDeferredCallState")
 	.enter_nonreentrant(f)
+}
+
+pub struct DeferredCallThread {}
+
+impl DeferredCallThread {
+    #[inline(never)]
+    fn register_internal_non_generic(handler: DynDefCallRef<'static>) {
+	    let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
+	        defcall_state.defcall_thread.1 = Some(handler);
+	    };
+
+	    unsafe { with_defcall_state_panic(closure) };
+    }
+
+    pub fn register<DC: DeferredCallClient>(client: &'static DC) {
+        let handler = DynDefCallRef::new(client);
+        Self::register_internal_non_generic(handler);
+    }
+
+    pub fn service() -> Option<()> {
+	    let closure = |defcall_state: &mut ThreadLocalDeferredCallState| -> Option<DynDefCallRef<'static>> {
+            if defcall_state.defcall_thread.0 {
+		        defcall_state.defcall_thread.1.map(|dc| dc)
+            } else {
+                None
+            }
+	    };
+
+	    let res = unsafe { with_defcall_state_panic(closure) };
+
+        res.map(|dc| { dc.handle_deferred_call(); })
+    }
+
+    pub fn set() {
+        let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
+            defcall_state.defcall_thread.0 = true;
+        };
+
+        unsafe { with_defcall_state_panic(closure) };
+    }
+
+    pub fn unset() {
+        let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
+            defcall_state.defcall_thread.0 = false;
+        };
+
+        unsafe { with_defcall_state_panic(closure) };
+    }
+
+    pub fn has_task() -> bool {
+        let closure = |defcall_state: &mut ThreadLocalDeferredCallState| -> bool {
+            defcall_state.defcall_thread.0
+        };
+
+        unsafe { with_defcall_state_panic(closure) }
+    }
+
 }
 
 // // All 3 of the below global statics are accessed only in this file, and all accesses
@@ -163,18 +223,18 @@ pub struct DeferredCall {
 impl DeferredCall {
     /// Creates a new deferred call with a unique ID.
     pub fn new() -> Self {
-	let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
-	    let idx = defcall_state.ctr + 1;
+	    let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
+	        let idx = defcall_state.ctr + 1;
             defcall_state.ctr = idx;
-	    idx
-	};
+	        idx
+	    };
 
-	// SAFETY: This function is non-reentrant per thread, and the panic
-	// handler will not attempt to execute this function. It will be called
-	// only after `DEFCALL_STATE` has been initialized, either in the static
-	// initialization above, or in the early board initialization of the
-	// board.
-	let idx = unsafe { with_defcall_state_panic(closure) };
+	    // SAFETY: This function is non-reentrant per thread, and the panic
+	    // handler will not attempt to execute this function. It will be called
+	    // only after `DEFCALL_STATE` has been initialized, either in the static
+	    // initialization above, or in the early board initialization of the
+	    // board.
+	    let idx = unsafe { with_defcall_state_panic(closure) };
 
         DeferredCall { idx }
     }
@@ -183,25 +243,25 @@ impl DeferredCall {
     // function without generic parameters.
     #[inline(never)]
     fn register_internal_non_generic(&self, handler: DynDefCallRef<'static>) {
-	let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
+	    let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
             if self.idx >= defcall_state.defcalls.len() {
-		// This error will be caught by the scheduler at the beginning
-		// of the kernel loop, which is much better than panicking here,
-		// before the debug writer is setup.  Also allows a single panic
-		// for creating too many deferred calls instead of NUM_DCS
-		// panics (this function is monomorphized).
-		return;
+		        // This error will be caught by the scheduler at the beginning
+		        // of the kernel loop, which is much better than panicking here,
+		        // before the debug writer is setup.  Also allows a single panic
+		        // for creating too many deferred calls instead of NUM_DCS
+		        // panics (this function is monomorphized).
+		        return;
             }
 
-	    defcall_state.defcalls[self.idx] = Some(handler);
-	};
+	        defcall_state.defcalls[self.idx] = Some(handler);
+	    };
 
-	// SAFETY: This function is non-reentrant per thread, and the panic
-	// handler will not attempt to execute this function. It will be called
-	// only after `DEFCALL_STATE` has been initialized, either in the static
-	// initialization above, or in the early board initialization of the
-	// board.
-	unsafe { with_defcall_state_panic(closure) };
+	    // SAFETY: This function is non-reentrant per thread, and the panic
+	    // handler will not attempt to execute this function. It will be called
+	    // only after `DEFCALL_STATE` has been initialized, either in the static
+	    // initialization above, or in the early board initialization of the
+	    // board.
+	    unsafe { with_defcall_state_panic(closure) };
     }
 
     /// This function registers the passed client with this deferred call, such
@@ -214,30 +274,30 @@ impl DeferredCall {
 
     /// Schedule a deferred callback on the client associated with this deferred call
     pub fn set(&self) {
-	let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
-	    defcall_state.bitmask |= 1 << self.idx;
-	};
+	    let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
+	        defcall_state.bitmask |= 1 << self.idx;
+	    };
 
-	// SAFETY: This function is non-reentrant per thread, and the panic
-	// handler will not attempt to execute this function. It will be called
-	// only after `DEFCALL_STATE` has been initialized, either in the static
-	// initialization above, or in the early board initialization of the
-	// board.
-	unsafe { with_defcall_state_panic(closure) };
+	    // SAFETY: This function is non-reentrant per thread, and the panic
+	    // handler will not attempt to execute this function. It will be called
+	    // only after `DEFCALL_STATE` has been initialized, either in the static
+	    // initialization above, or in the early board initialization of the
+	    // board.
+	    unsafe { with_defcall_state_panic(closure) };
     }
 
     /// Check if a deferred callback has been set and not yet serviced on this deferred call.
     pub fn is_pending(&self) -> bool {
-	let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
-	    (defcall_state.bitmask & 1 << self.idx) == 1
-	};
+	    let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
+	        (defcall_state.bitmask & 1 << self.idx) == 1
+	    };
 
-	// SAFETY: This function is non-reentrant per thread, and the panic
-	// handler will not attempt to execute this function. It will be called
-	// only after `DEFCALL_STATE` has been initialized, either in the static
-	// initialization above, or in the early board initialization of the
-	// board.
-	unsafe { with_defcall_state_panic(closure) }
+	    // SAFETY: This function is non-reentrant per thread, and the panic
+	    // handler will not attempt to execute this function. It will be called
+	    // only after `DEFCALL_STATE` has been initialized, either in the static
+	    // initialization above, or in the early board initialization of the
+	    // board.
+	    unsafe { with_defcall_state_panic(closure) }
     }
 
     /// Services and clears the next pending `DeferredCall`, returns which index
@@ -284,16 +344,16 @@ impl DeferredCall {
     /// Returns true if any deferred calls are waiting to be serviced,
     /// false otherwise.
     pub fn has_tasks() -> bool {
-	let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
-	    defcall_state.bitmask != 0
-	};
+	    let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
+	        defcall_state.bitmask != 0
+	    };
 
-	// SAFETY: This function is non-reentrant per thread, and the panic
-	// handler will not attempt to execute this function. It will be called
-	// only after `DEFCALL_STATE` has been initialized, either in the static
-	// initialization above, or in the early board initialization of the
-	// board.
-	unsafe { with_defcall_state_panic(closure) }
+	    // SAFETY: This function is non-reentrant per thread, and the panic
+	    // handler will not attempt to execute this function. It will be called
+	    // only after `DEFCALL_STATE` has been initialized, either in the static
+	    // initialization above, or in the early board initialization of the
+	    // board.
+	    unsafe { with_defcall_state_panic(closure) }
     }
 
     /// This function should be called at the beginning of the kernel loop
@@ -312,23 +372,23 @@ impl DeferredCall {
     // IntoIterator is not implemented for OptionalCell.
     #[allow(clippy::iter_filter_is_some)]
     pub fn verify_setup() {
-	let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
+	    let closure = |defcall_state: &mut ThreadLocalDeferredCallState| {
             let num_deferred_calls = defcall_state.ctr;
             num_deferred_calls >= defcall_state.defcalls.len()
-		|| defcall_state.defcalls.iter().filter(|opt| opt.is_some()).count() != num_deferred_calls
-	};
+		        || defcall_state.defcalls.iter().filter(|opt| opt.is_some()).count() != num_deferred_calls
+	    };
 
-	// SAFETY: This function is non-reentrant per thread, and the panic
-	// handler will not attempt to execute this function. It will be called
-	// only after `DEFCALL_STATE` has been initialized, either in the static
-	// initialization above, or in the early board initialization of the
-	// board.
-	let broken = unsafe { with_defcall_state_panic(closure) };
+	    // SAFETY: This function is non-reentrant per thread, and the panic
+	    // handler will not attempt to execute this function. It will be called
+	    // only after `DEFCALL_STATE` has been initialized, either in the static
+	    // initialization above, or in the early board initialization of the
+	    // board.
+	    let broken = unsafe { with_defcall_state_panic(closure) };
 
-	if broken {
-	    panic!(
+	    if broken {
+	        panic!(
                 "ERROR: > 32 deferred calls, or a component forgot to register a deferred call."
-	    );
+	        );
         }
 
 
