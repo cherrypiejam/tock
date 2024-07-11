@@ -24,7 +24,7 @@ use crate::plic::PLIC;
 use crate::clint::CLIC;
 use crate::{MAX_THREADS, MAX_CONTEXTS, plic::PLIC_BASE};
 
-use crate::channel::{SHARED_CHANNEL_BUFFER, CHANNEL_BUFFER, BUFFER_SIZE};
+use crate::channel::{SHARED_CHANNEL_BUFFER, CHANNEL_BUFFER, BUFFER_SIZE, SHARED_CHANNEL};
 use core::ptr;
 
 use virtio::transports::mmio::VirtIOMMIODevice;
@@ -237,13 +237,11 @@ unsafe fn handle_interrupt(intr: mcause::Interrupt) {
         }
 
         mcause::Interrupt::MachineSoft => {
-            // Timing safety: We need to prevent from the app core sending
-            // interrupts to the communication core. We may need a pluggable
-            // policy instead.
-
             // Disable IPI
             CSR.mie.modify(mie::msoft::CLEAR);
 
+
+            // Safety: static mut CLIC isn't modified in any ways
             let hart_id = CSR.mhartid.extract().get();
             if let Some(clic) = thread_local_static_access!(
                 CLIC, DynThreadId::new(hart_id)
@@ -260,13 +258,19 @@ unsafe fn handle_interrupt(intr: mcause::Interrupt) {
                 //         or interfering the timing with the sending processor.
                 //         Need to address the concurrent access problem at
                 //         the kernel and the shared channel.
+
+
+                // Just clear soft interrupts and activate the inter-thread communication
+                // processor
+
                 clic.clear_soft_interrupt(hart_id);
                 CHANNEL_BUFFER.get_mut(DynThreadId::new(hart_id))
                         .expect("This thread does not have access to the channel buffer")
                         .enter_nonreentrant(|buf| {
-                            ptr::copy_nonoverlapping(ptr::addr_of!(SHARED_CHANNEL_BUFFER), buf, BUFFER_SIZE);
+                            use kernel::smp::channel::InterThreadChannel;
+                            SHARED_CHANNEL.read_buf(buf);
                         });
-                // Active the inter-thread communication processor
+                // Activate the inter-thread communication processor
                 DeferredCallThread::set();
             }
 

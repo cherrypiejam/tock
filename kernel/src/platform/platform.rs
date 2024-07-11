@@ -51,6 +51,10 @@ pub trait KernelResources<C: Chip> {
     /// of the kernel.
     type WatchDog: watchdog::WatchDog;
 
+    /// The implementation of the shared buffer used to support the communication
+    /// across threads.
+    type InterThreadChannel: smp::channel::InterThreadChannel;
+
     /// Returns a reference to the implementation of the SyscallDriverLookup this
     /// platform will use to route syscalls.
     fn syscall_driver_lookup(&self) -> &Self::SyscallDriverLookup;
@@ -83,8 +87,8 @@ pub trait KernelResources<C: Chip> {
     /// platform.
     fn watchdog(&self) -> &Self::WatchDog;
 
-    /// Return a shared buffer between kernels
-    unsafe fn shared_buffer(&self) -> &mut [u8];
+    /// Return a shared channel between kernels
+    fn shared_channel(&self) -> &Self::InterThreadChannel;
 }
 
 /// Configure the system call dispatch mapping.

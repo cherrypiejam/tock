@@ -53,6 +53,10 @@ pub trait Chip {
 
     /// Send a notification to another thread.
     fn notify(&self, id: &dyn threadlocal::ThreadId);
+    // TODO: where to get another thread's id? Use InterThreadChannel
+
+    /// Get the current thread's ID.
+    fn id(&self) -> &dyn threadlocal::ThreadId;
 
     /// Print out chip state (system registers) to a supplied
     /// writer. This does not print out the execution context

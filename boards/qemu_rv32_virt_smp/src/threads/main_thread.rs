@@ -568,21 +568,17 @@ pub unsafe fn spawn<const ID: usize>() {
 
     // Send echo command to the app thread
     let shared_buffer = platform.shared_buffer();
-    // unsafe {
-    //     shared_buffer[0] = 10;
-    //     shared_buffer[1] = 5;
-    //     shared_buffer[58] = 101;
-    // }
+    unsafe {
+        shared_buffer[0] = 10;
+        shared_buffer[1] = 5;
+        shared_buffer[58] = 101;
+    }
 
     // Block until the app thread finishes initialization
     while !APP_THREAD_READY.load(Ordering::SeqCst) {}
 
     chip.notify(&id);
 
-    // hardware_timer.set_soft_interrupt(1);
-    // loop {
-    //     hardware_timer.set_soft_interrupt(1);
-    // }
 
     // ---------- PROCESS LOADING, SCHEDULER LOOP ----------
 
