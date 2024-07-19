@@ -53,8 +53,10 @@ pub trait Scheduler<C: Chip> {
         while DeferredCall::has_tasks() && !chip.has_pending_interrupts() {
             DeferredCall::service_next_pending();
         }
-        while DeferredCallThread::has_task() {
-            DeferredCallThread::service(); // TODO: will block
+
+        // Process only once to ensure liveness
+        if DeferredCallThread::has_task() {
+            DeferredCallThread::service();
         }
     }
 
