@@ -446,6 +446,12 @@ impl DebugWriterWrapper {
             dw: MapCell::new(dw),
         }
     }
+
+    pub fn empty() -> DebugWriterWrapper {
+        DebugWriterWrapper {
+            dw: MapCell::empty(),
+        }
+    }
 }
 
 impl DebugWriter {
