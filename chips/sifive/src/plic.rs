@@ -40,48 +40,11 @@ where
     aux: [PlicAux; NUM_CONTEXTS],
 }
 
-// #[repr(C)]
-// pub struct PlicRegisters
-// {
-//     /// Interrupt Priority Register
-//     _reserved0: u32,
-//     priority: [ReadWrite<u32, priority::Register>; 51],
-//     _reserved1: [u8; 3888],
-//     /// Interrupt Pending Register
-//     pending: [ReadOnly<u32>; 2],
-//     _reserved2: [u8; 4088],
-//     /// Interrupt Enable Register
-//     enable: [[ReadWrite<u32>; 32]; 15872],
-//     _reserved3: [u8; 57344],
-//     /// Aux: Priority and Claim/Complete Register
-//     aux: [PlicAux; 15872],
-// }
-
 register_bitfields![u32,
     priority [
         Priority OFFSET(0) NUMBITS(3) []
     ]
 ];
-
-// // pub type PlicSaved<const NUM_CONTEXTS: usize> = ThreadLocal<NUM_CONTEXTS, [VolatileCell<LocalRegisterCopy<u32>>; 2]>;
-// #[derive(Copy, Clone)]
-// #[repr(transparent)]
-// struct PlicSaved {
-//     holder: [u32; 2],
-// }
-
-// impl PlicSaved {
-//     const unsafe fn new(val: u32) -> PlicSaved {
-//         Self { holder: [val; 2] }
-//     }
-
-//     fn get_slice(&self) -> &'_ [VolatileCell<LocalRegisterCopy<u32>>; 2] {
-//         unsafe {
-//             core::mem::transmute(&self.holder)
-//         }
-//     }
-// }
-
 
 pub struct Plic<const NUM_CONTEXTS: usize>
 where
@@ -124,6 +87,26 @@ where
             }
             regs.aux[context_id].claim.set(id);
         }
+    }
+
+    // Enable an interrupt.
+    pub fn enable(&self, context_id: usize, source: usize) {
+        let _ : () = assert!(context_id < NUM_CONTEXTS);
+
+        let enable = &self.registers.enable[context_id][source / 32];
+        let old_val = enable.get();
+        enable.set(old_val | 1 << (source % 32));
+
+        // Set default priority for the source
+        self.registers.priority[source].write(priority::Priority.val(4));
+        self.registers.aux[context_id].threshold.write(priority::Priority.val(0));
+    }
+
+    // Disable an interrupt.
+    pub fn disable(&self, context_id: usize, source: usize) {
+        let enable = &self.registers.enable[context_id][source / 32];
+        let old_val = enable.get();
+        enable.set(old_val & !(1 << (source % 32)));
     }
 
     /// Enable all interrupts.
