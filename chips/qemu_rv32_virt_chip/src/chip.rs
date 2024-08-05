@@ -18,10 +18,9 @@ use rv32i::csr::{mcause, mie::mie, mip::mip, CSR};
 
 use sifive::plic::Plic;
 
-use crate::interrupts;
+use crate::{interrupts, clint};
 use crate::channel::{self, QemuRv32VirtChannel};
 use crate::plic::PLIC;
-use crate::clint::CLIC;
 use crate::{MAX_THREADS, MAX_CONTEXTS, plic::PLIC_BASE};
 use crate::portal_cell::QemuRv32VirtPortalCell;
 use crate::uart::Uart16550;
@@ -298,19 +297,18 @@ unsafe fn handle_interrupt(intr: mcause::Interrupt) {
             CSR.mie.modify(mie::msoft::CLEAR);
 
             let hart_id = CSR.mhartid.extract().get();
-            kernel::thread_local_static_access!(CLIC, DynThreadId::new(hart_id))
-                .expect("Unable to access thread-local CLIC controller")
-                .enter_nonreentrant(|clic| {
-                    clic.clear_soft_interrupt(hart_id);
-                    // FIXME: Accessing deferred calls here is unsound.
-                    // THIS WILL BREAK
-                    channel::with_shared_channel_panic(|channel| {
-                        channel
-                            .as_mut()
-                            .expect("Uninitialized channel")
-                            .service_async();
-                    });
-                });
+
+            clint::with_clic_panic(|clic| {
+                clic.clear_soft_interrupt(hart_id);
+            });
+
+            channel::with_shared_channel_panic(|channel| {
+                channel
+                    .as_mut()
+                    .expect("uninitialized channel")
+                    .service_async();
+            });
+
             CSR.mie.modify(mie::msoft::SET);
         }
         mcause::Interrupt::MachineTimer => {

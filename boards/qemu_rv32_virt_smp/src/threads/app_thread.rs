@@ -229,7 +229,8 @@ pub unsafe fn spawn<const ID: usize>(
     // ---------- QEMU-SYSTEM-RISCV32 "virt" MACHINE PERIPHERALS ----------
 
     thread_local_static_finalize!(PLIC, ID);
-    thread_local_static_finalize!(qemu_rv32_virt_chip::clint::CLIC, ID);
+    // Initialize the core-local interrupt controler
+    qemu_rv32_virt_chip::clint::init_clic();
 
     // Initialize the kernel-local channel
     qemu_rv32_virt_chip::channel::with_shared_channel_panic(|c| {

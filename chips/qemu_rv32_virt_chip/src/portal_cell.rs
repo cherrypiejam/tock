@@ -86,9 +86,7 @@ impl<'a, T: ?Sized> Portalable for QemuRv32VirtPortalCell<'a, T> {
             if success {
                 let closure = |c: &mut QemuRv32VirtClint| c.set_soft_interrupt(receiver_id);
                 unsafe {
-                    thread_local_static_access!(crate::clint::CLIC, DynThreadId::new(id))
-                        .expect("This thread does not have access to CLIC")
-                        .enter_nonreentrant(closure);
+                    crate::clint::with_clic_panic(closure);
                 }
             }
         }
@@ -118,9 +116,7 @@ impl<'a, T: ?Sized> Portalable for QemuRv32VirtPortalCell<'a, T> {
             if success {
                 let closure = move |c: &mut QemuRv32VirtClint| c.set_soft_interrupt(dst_id);
                 unsafe {
-                    thread_local_static_access!(crate::clint::CLIC, DynThreadId::new(id))
-                        .expect("This thread does not have access to CLIC")
-                        .enter_nonreentrant(closure);
+                    crate::clint::with_clic_panic(closure);
                 }
             }
         }

@@ -149,13 +149,10 @@ impl<'a> QemuRv32VirtChannel<'a> {
                                 ),
                             })));
 
+                            let closure = move |c: &mut crate::chip::QemuRv32VirtClint| c.set_soft_interrupt(msg.src);
                             unsafe {
-                                kernel::thread_local_static_access!(crate::clint::CLIC, DynThreadId::new(hart_id))
-                                    .expect("This thread does not have access to CLIC")
-                                    .enter_nonreentrant(|clic| {
-                                        clic.set_soft_interrupt(msg.src);
-                                    })
-                            };
+                                crate::clint::with_clic_panic(closure);
+                            }
                         }
                     };
 

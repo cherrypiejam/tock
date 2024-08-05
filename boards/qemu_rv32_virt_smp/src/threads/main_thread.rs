@@ -242,7 +242,15 @@ pub unsafe fn spawn<const ID: usize>(
     // ---------- QEMU-SYSTEM-RISCV32 "virt" MACHINE THREAD LOCALS ----------
 
     thread_local_static_finalize!(PLIC, ID);
-    thread_local_static_finalize!(qemu_rv32_virt_chip::clint::CLIC, ID);
+
+    // Initialize the kernel's core-local interrupt controller
+    qemu_rv32_virt_chip::clint::set_global_clic(static_init!(
+        qemu_rv32_virt_chip::QemuRv32VirtThreadLocal<Option<qemu_rv32_virt_chip::chip::QemuRv32VirtClint>>,
+        qemu_rv32_virt_chip::QemuRv32VirtThreadLocal::new([
+            const { None }; MAX_THREADS
+        ]),
+    ));
+    qemu_rv32_virt_chip::clint::init_clic();
 
     // Initialize the kernel's deferred call infrastructure
     kernel::deferred_call::initialize_global_deferred_call_state(static_init!(
