@@ -128,7 +128,6 @@ impl
     >;
     type WatchDog = ();
     type ContextSwitchCallback = ();
-    // type SharedChannel = qemu_rv32_virt_chip::channel::QemuRv32VirtChannel<'static>;
 
     fn syscall_driver_lookup(&self) -> &Self::SyscallDriverLookup {
         self
@@ -154,9 +153,6 @@ impl
     fn context_switch_callback(&self) -> &Self::ContextSwitchCallback {
         &()
     }
-    // fn shared_channel(&self) -> &Self::SharedChannel {
-    //     self.shared_channel
-    // }
 }
 
 pub unsafe fn spawn<const ID: usize>(
@@ -277,16 +273,11 @@ pub unsafe fn spawn<const ID: usize>(
 
     // Initial setup for the shared channel
     qemu_rv32_virt_chip::channel::set_shared_channel(static_init!(
-        qemu_rv32_virt_chip::QemuRv32VirtThreadLocal<Option<qemu_rv32_virt_chip::channel::QemuRv32VirtChannel>>,
+        qemu_rv32_virt_chip::QemuRv32VirtThreadLocal<Option<&'static dyn qemu_rv32_virt_chip::channel::QemuRv32VirtChannel>>,
         qemu_rv32_virt_chip::QemuRv32VirtThreadLocal::new([
             const { None }; MAX_THREADS
         ]),
     ));
-
-    // Initialize the kernel's local channel
-    qemu_rv32_virt_chip::channel::with_shared_channel_panic(|c| {
-        let _ = c.replace(qemu_rv32_virt_chip::channel::QemuRv32VirtChannel::new(channel));
-    });
 
     // ---------- QEMU-SYSTEM-RISCV32 "virt" MACHINE PORTALS ----------
 
@@ -377,6 +368,29 @@ pub unsafe fn spawn<const ID: usize>(
         )
     );
     hil::time::Alarm::set_alarm_client(virtual_alarm_user, alarm);
+
+    // Initialize the kernel's local one-way channel
+    let virtual_alarm_channel = static_init!(
+        VirtualMuxAlarm<'static, qemu_rv32_virt_chip::chip::QemuRv32VirtClint>,
+        VirtualMuxAlarm::new(mux_alarm)
+    );
+    virtual_alarm_channel.setup();
+
+    qemu_rv32_virt_chip::channel::with_shared_channel_panic(|c| {
+        let local_buffer = static_init!(
+            [Option<qemu_rv32_virt_chip::channel::QemuRv32VirtMessage>; 32],
+            [None; 32],
+        );
+        let shared_channel = static_init!(
+            qemu_rv32_virt_chip::channel::oneway::OneWayQemuRv32VirtChannelSender<VirtualMuxAlarm<'static, qemu_rv32_virt_chip::chip::QemuRv32VirtClint>>,
+            qemu_rv32_virt_chip::channel::oneway::OneWayQemuRv32VirtChannelSender::new(
+                local_buffer,
+                virtual_alarm_channel,
+            ),
+        );
+        hil::time::Alarm::set_alarm_client(virtual_alarm_channel, shared_channel);
+        let _ = c.replace(shared_channel);
+    });
 
     // ---------- VIRTIO PERIPHERAL DISCOVERY ----------
     //
@@ -656,8 +670,8 @@ pub unsafe fn spawn<const ID: usize>(
         while !APP_THREAD_READY.load(Ordering::SeqCst) {}
     }
 
-    debug!("QEMU RISC-V 32-bit {MAX_THREADS}-SMP \"virt\" machine core {ID}, initialization complete.");
-    debug!("Entering main kernel loop.");
+    // debug!("QEMU RISC-V 32-bit {MAX_THREADS}-SMP \"virt\" machine core {ID}, initialization complete.");
+    // debug!("Entering main kernel loop.");
 
 
     // ---------- PROCESS LOADING, SCHEDULER LOOP ----------
@@ -682,8 +696,19 @@ pub unsafe fn spawn<const ID: usize>(
         debug!("{:?}", err);
     });
 
+    qemu_rv32_virt_chip::channel::with_shared_channel_panic(|c| {
+        c.map(|c| {
+            use qemu_rv32_virt_chip::channel::{QemuRv32VirtMessage, QemuRv32VirtMessageBody};
+            c.write(QemuRv32VirtMessage{
+                src: 0,
+                dst: 1,
+                body: QemuRv32VirtMessageBody::Request(1337),
+            })
+        }).expect("Uninitialized channel")
+    });
+
     board_kernel.kernel_loop(&platform, chip, Some(&platform.ipc), &main_loop_cap,
-                             true,
+                             false,
                              Some(&|| {
                                  static mut ENTERED: bool = false;
                                  counter_portal.enter(|c| {

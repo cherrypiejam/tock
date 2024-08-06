@@ -132,7 +132,7 @@ impl<'a, I: InterruptService + 'a> QemuRv32VirtChip<'a, I> {
     }
 
     fn has_channel_requests(&self) -> bool {
-        let closure = |c: &mut Option<QemuRv32VirtChannel>| {
+        let closure = |c: &mut Option<&dyn QemuRv32VirtChannel>| {
             c.as_mut()
                 .expect("Uninitialized channel")
                 .has_pending_requests()
@@ -143,12 +143,12 @@ impl<'a, I: InterruptService + 'a> QemuRv32VirtChip<'a, I> {
 
     unsafe fn handle_next_channel_request(&self) {
         if self.has_channel_requests() {
-            let closure = |c: &mut Option<QemuRv32VirtChannel>| {
+            let closure = |c: &mut Option<&dyn QemuRv32VirtChannel>| {
                 let channel = c.as_mut().expect("Uninitialized channel");
                 channel.service();
 
                 self.atomic(|| {
-                    channel.service_complete();
+                    channel.complete();
                 });
             };
 
@@ -209,7 +209,7 @@ impl<'a, I: InterruptService + 'a> Chip for QemuRv32VirtChip<'a, I> {
         }
 
         // Check if there is any pending inter-kernel messages
-        let closure = |channel: &mut Option<QemuRv32VirtChannel>| {
+        let closure = |channel: &mut Option<&dyn QemuRv32VirtChannel>| {
             channel.as_mut()
                 .expect("Uninitialized channel")
                 .has_pending_requests()

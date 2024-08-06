@@ -70,7 +70,7 @@ impl<'a, T: ?Sized> Portalable for QemuRv32VirtPortalCell<'a, T> {
             // TODO: notify all
             let receiver_id = if id == 0 { 1 } else { 0 };
 
-            let do_request = move |channel: &mut Option<QemuRv32VirtChannel>| {
+            let do_request = move |channel: &mut Option<&dyn QemuRv32VirtChannel>| {
                 channel
                     .as_mut()
                     .expect("Uninitialized channel")
@@ -97,7 +97,7 @@ impl<'a, T: ?Sized> Portalable for QemuRv32VirtPortalCell<'a, T> {
             let id = CSR.mhartid.extract().get();
             let dst_id = dst.get_id();
 
-            let do_response = move |channel: &mut Option<QemuRv32VirtChannel>| {
+            let do_response = move |channel: &mut Option<&dyn QemuRv32VirtChannel>| {
                 channel
                     .as_mut()
                     .expect("Uninitialized channel")
