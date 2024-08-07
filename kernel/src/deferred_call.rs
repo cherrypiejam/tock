@@ -58,8 +58,7 @@
 //! some_capsule.register();
 //! ```
 
-use crate::threadlocal::{ThreadLocal, ThreadLocalDyn, ThreadLocalDynInit};
-use crate::utilities::cells::OptionalCell;
+use crate::threadlocal::{ThreadLocal, ThreadLocalDyn};
 use core::marker::Copy;
 use core::marker::PhantomData;
 

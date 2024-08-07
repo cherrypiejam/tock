@@ -9,8 +9,6 @@ use kernel::utilities::registers::LocalRegisterCopy;
 use kernel::utilities::registers::{register_bitfields, ReadOnly, ReadWrite};
 use kernel::utilities::StaticRef;
 
-use kernel::threadlocal::{NonReentrant, ThreadId, ThreadLocal, ThreadLocalAccess};
-
 #[repr(C)]
 pub struct PlicAux {
     /// Priority Threshold Register
