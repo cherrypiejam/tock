@@ -42,14 +42,14 @@ pub trait QemuRv32VirtChannel {
     fn write(&self, message: QemuRv32VirtMessage) -> bool;
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct QemuRv32VirtMessage {
     pub src: usize,
     pub dst: usize,
     pub body: QemuRv32VirtMessageBody,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum QemuRv32VirtMessageBody {
     PortalRequest(usize),
     PortalResponse(usize, *const ()),

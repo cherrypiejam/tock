@@ -292,6 +292,9 @@ unsafe fn handle_interrupt(intr: mcause::Interrupt) {
             panic!("unexpected supervisor-mode interrupt");
         }
 
+        // TODO: This interrupt must be fired first in the present of other
+        // interrupts for the receiver side. The expected time must always be
+        // `max(all_atomic_sections)`. What about the sender?
         mcause::Interrupt::MachineSoft => {
             // Disable IPI
             CSR.mie.modify(mie::msoft::CLEAR);
@@ -305,7 +308,7 @@ unsafe fn handle_interrupt(intr: mcause::Interrupt) {
             channel::with_shared_channel_panic(|channel| {
                 channel
                     .as_mut()
-                    .expect("uninitialized channel")
+                    .expect("Uninitialized channel")
                     .service_async();
             });
 

@@ -56,6 +56,7 @@ impl<'a, A: Alarm<'a>> OneWayQemuRv32VirtChannelSender<'a, A> {
         }
     }
 
+    // Timing safety: not depending on the receiver side
     pub fn do_service(&self) {
         use QemuRv32VirtMessageBody as M;
 
@@ -65,13 +66,16 @@ impl<'a, A: Alarm<'a>> OneWayQemuRv32VirtChannelSender<'a, A> {
             match message.body {
                 M::Response(res) => {
                     kernel::debug!("QemuRv32VirtChannelOneWaySender received response: {:?}", res);
-                    // self.receive()
+                    // TODO: forward the response to the sender-local IPC mechanism
                 }
                 _ => panic!("Invalid message type for QemuRv32VirtChannelOneWaySender"),
             }
         }
     }
 
+    // Timing safety: its timing doesn't not depend on the receiver
+    // as long as we guarantee no concurrent access of the shared buffer
+    // between the sender and the receiver.
     pub fn send(&self, message: QemuRv32VirtMessage, duration: u32) {
         // TODO: safety
         let channel = unsafe { &mut *self.channel.get() };
@@ -106,12 +110,14 @@ impl<'a, A: Alarm<'a>> OneWayQemuRv32VirtChannelSender<'a, A> {
         }
     }
 
-    // Procedures when received a signal from the receiver
-    fn retrieve_from_shared_buffer(&self) {
+    // This is called to retrieve responses from the receiver for later processing.
+    fn service_prepare(&self) {
         // This is safe because the local channel is only exclusively used here.
         let channel = unsafe { &mut *self.channel.get() };
-        // We guarantee that there's only one mutable reference of the shared buffer
-        // at any given time.
+
+        // Timing safety: the timing of accessing shared_buffer does not depend on
+        // the other side. This protocol _must_ guarantee that there's no concurrent
+        // access to the shared buffer in parallel at any given time.
         let shared_buffer = unsafe {
             &mut *core::ptr::addr_of_mut!(SHARED_BUFFER)
         };
@@ -127,9 +133,9 @@ impl<'a, A: Alarm<'a>> OneWayQemuRv32VirtChannelSender<'a, A> {
         channel.empty();
 
         // Copy from the shared buffer to the local_buffer
-        for item in shared_buffer.iter() {
-            channel.enqueue(*item);
-        }
+        shared_buffer.iter().for_each(|item| {
+            let _ = channel.push(*item).ok_or(()).unwrap_err();
+        });
 
         // Flush the shared buffer
         shared_buffer.fill(None);
@@ -143,11 +149,16 @@ impl<'a, A: Alarm<'a>> AlarmClient for OneWayQemuRv32VirtChannelSender<'a, A> {
 }
 
 impl<'a, A: Alarm<'a>> QemuRv32VirtChannel for OneWayQemuRv32VirtChannelSender<'a, A> {
+    // Timing safety: not depending on the receiver.
+    // The timing of this method may result in only 1-bit leak when it misses
+    // the deadline to retrieve the message.
     fn service(&self) {
-        self.retrieve_from_shared_buffer();
+        self.service_prepare();
         self.do_service();
     }
 
+    // Top half when getting a response from the receiver.
+    // Timing safety: not depending on the receiver
     fn service_async(&self) {
         let old_val = self.notified.get();
         self.notified.set(old_val + 1);
@@ -162,12 +173,14 @@ impl<'a, A: Alarm<'a>> QemuRv32VirtChannel for OneWayQemuRv32VirtChannelSender<'
         self.notified.set(old_val - 1);
     }
 
+    // Must be writable, timing doesn't matter as its sender-dependent
     fn write(&self, message: QemuRv32VirtMessage) -> bool {
         let channel = unsafe { &mut *self.channel.get() };
-        if channel.enqueue(Some(message)) {
+        let success = channel.enqueue(Some(message));
+        if success {
             self.send(message, u32::MAX.into());
         }
-        true
+        success
     }
 }
 
@@ -207,9 +220,8 @@ impl<'a, A: Alarm<'a>> OneWayQemuRv32VirtChannelReceiver<'a, A> {
         }
     }
 
-    // Procedures to return responses to the sender.
-    // This is used when getting alarmed by itself
-    pub fn send(&self) {
+    // This method is invoked to return the actual response to the sender.
+    pub fn do_service_finalize(&self) {
         let channel = unsafe { &mut *self.channel.get() };
         let shared_buffer = unsafe {
             &mut *core::ptr::addr_of_mut!(SHARED_BUFFER)
@@ -238,9 +250,8 @@ impl<'a, A: Alarm<'a>> OneWayQemuRv32VirtChannelReceiver<'a, A> {
         }
     }
 
-    // This is called when getting a signal from the sender.
-    // This copies contents in the shared buffer to its local buffer.
-    fn receive(&self, duration: u32) {
+    // This is called when receiving a signal from the sender
+    fn service_prepare(&self, duration: u32) {
         let channel = unsafe { &mut *self.channel.get() };
         let shared_buffer = unsafe {
             &mut *core::ptr::addr_of_mut!(SHARED_BUFFER)
@@ -269,7 +280,7 @@ impl<'a, A: Alarm<'a>> OneWayQemuRv32VirtChannelReceiver<'a, A> {
 
 impl<'a, A: Alarm<'a>> AlarmClient for OneWayQemuRv32VirtChannelReceiver<'a, A> {
     fn alarm(&self) {
-        self.send()
+        self.do_service_finalize()
     }
 }
 
@@ -278,335 +289,43 @@ impl<'a, A: Alarm<'a>> QemuRv32VirtChannel for OneWayQemuRv32VirtChannelReceiver
         self.do_service();
     }
 
+    // This is called when the receiver receives a signal from the sender and served
+    // as the channel-specific code of the blocking top half. For timing safety, we
+    // need to save the received message, set an alarm for response, and immediately
+    // encrypt the shared buffer with a nonce to fake a non-distinguishable response.
     fn service_async(&self) {
+        // Saved the signal for the bottom half.
+        let old_val = self.notified.get();
+        self.notified.set(old_val + 1);
+
+        // Top half
         use kernel::hil::time::{ConvertTicks, Ticks};
         let ticks_1sec = unsafe {
             crate::clint::with_clic_panic(|c| c.ticks_from_seconds(1).into_u32())
         };
 
-        let old_val = self.notified.get();
-        self.notified.set(old_val + 1);
-        self.receive(ticks_1sec);
+        self.service_prepare(ticks_1sec);
     }
 
     fn has_pending_requests(&self) -> bool {
         self.notified.get() != 0
     }
 
+    // TODO: this does not need to be in a critical section because no futher
+    // interrupt that modifies its local state will be fired and handled. This
+    // must be guaranteed by the sender's TCB.
     fn complete(&self) {
         let old_val = self.notified.get();
         self.notified.set(old_val - 1);
     }
 
+    // This is called when the receiver writes a response locally. Similarly,
+    // this function doesn't not need to sit in a critical section because no
+    // `service_async` will be triggered. Is this true?
+    // FIXME: timer interrupts are not handled immediately
     fn write(&self, message: QemuRv32VirtMessage) -> bool {
         let channel = unsafe { &mut *self.channel.get() };
         channel
             .enqueue(Some(message))
     }
 }
-
-// -----------------------------------------------------------------------------------------
-
-// pub struct QemuRv32VirtChannelOneWay<'a> {
-//     shared_buffer: &'a UnsafeCell<[Option<QemuRv32VirtMessage>]>,
-//     channel: &'a RingBuffer<'a, Option<QemuRv32VirtMessage>>,
-//     notified: Cell<usize>,
-//     role: OnceCell<QemuRv32VirtChannelOneWayRole>,
-//     alarm: 
-// }
-
-
-// // pub struct QemuRv32VirtChannelOneWaySender<'a> {
-// //     shared_buffer: &'a UnsafeCell<[Option<QemuRv32VirtMessage>]>,
-// //     channel: &'a RingBuffer<'a, Option<QemuRv32VirtMessage>>,
-// //     notified: Cell<usize>,
-// //     role: OnceCell<QemuRv32VirtChannelOneWayRole>,
-// // }
-
-// // pub struct QemuRv32VirtChannelOneWayReceiver<'a> {
-// //     shared_buffer: &'a UnsafeCell<[Option<QemuRv32VirtMessage>]>,
-// //     channel: &'a RingBuffer<'a, Option<QemuRv32VirtMessage>>,
-// //     notified: Cell<usize>,
-// //     role: OnceCell<QemuRv32VirtChannelOneWayRole>,
-// // }
-
-// pub struct QemuRv32VirtChannelOneWay<'a> {
-//     shared_buffer: &'a UnsafeCell<[Option<QemuRv32VirtMessage>]>,
-//     channel: RingBuffer<'a, Option<QemuRv32VirtMessage>>,
-//     notified: Cell<usize>,
-//     role: OnceCell<QemuRv32VirtChannelOneWayRole>,
-//     alarm: 
-// }
-
-// impl<'a> QemuRv32VirtChannelOneWay<'a> {
-//     pub fn new(
-//         shared_buffer: &'a [Option<QemuRv32VirtMessage>],
-//         local_buffer: &'a [Option<QemuRv32VirtMessage>],
-//         role: QemuRv32VirtChannelOneWayRole,
-//     ) -> Self {
-//         let locked_role = oncecell::new();
-//         locked_role.set(role);
-//         QemuRv32VirtChannelOneWay {
-//             shared_buffer,
-//             channel: RingBuffer::new(local_buffer),
-//             notified: Cell::new(0),
-//             role: locked_role,
-//         }
-//     }
-
-//     fn find<P>(
-//         channel: &mut RingBuffer<'a, Option<QemuRv32VirtMessage>>,
-//         predicate: P
-//     ) -> Option<QemuRv32VirtMessage>
-//     where
-//         P: Fn(&QemuRv32VirtMessage) -> bool
-//     {
-//         let mut len = channel.len();
-//         while len != 0 {
-//             let msg = channel.dequeue()
-//                 .expect("Invalid QemuRv32VirtChannelOneWay State")
-//                 .expect("Invalid Message Type");
-//             if predicate(&msg) {
-//                 return Some(msg)
-//             }
-//             channel.enqueue(Some(msg));
-//             len -= 1;
-//         }
-//         None
-//     }
-
-//     pub fn service(&self) {
-//         let hart_id = CSR.mhartid.extract().get();
-
-//         // Acquire the mutex for the entire operation to reserve a slot for a potential
-//         // response. Invoking teleport inside the scope will result in a deadlock.
-//         // TODO: switch to a non-blocking channel
-//         let mut channel = self.channel.lock();
-//         if let Some(msg) = Self::find(&mut channel, |msg| msg.dst == hart_id) {
-//             use QemuRv32VirtMessageBody as M;
-//             match msg.body {
-//                 M::PortalRequest(portal_id) => {
-//                     let closure = |ps: &mut [QemuRv32VirtPortal; NUM_PORTALS]| {
-//                         use QemuRv32VirtPortal as P;
-//                         let traveler = match ps[portal_id] {
-//                             P::Uart16550(val) => {
-//                                 let portal = unsafe {
-//                                     &*(val as *const QemuRv32VirtPortalCell<crate::uart::Uart16550>)
-//                                 };
-//                                 assert!(portal.get_id() == portal_id);
-//                                 if let Some(uart) = portal.take() {
-//                                     uart.save_context();
-//                                     unsafe {
-//                                         kernel::thread_local_static_access!(crate::plic::PLIC, DynThreadId::new(hart_id))
-//                                             .expect("Unable to access thread-local PLIC controller")
-//                                             .enter_nonreentrant(|plic| {
-//                                                 plic.disable(hart_id * 2,
-//                                                              (crate::interrupts::UART0 as u32).try_into().unwrap());
-//                                             });
-//                                     }
-//                                     Some(uart as *mut _ as *const _)
-//                                 } else {
-//                                     None
-//                                 }
-//                             }
-//                             P::Counter(val) => {
-//                                 let portal = unsafe {
-//                                     &*(val as *const QemuRv32VirtPortalCell<usize>)
-//                                 };
-//                                 assert!(portal.get_id() == portal_id);
-//                                 portal.take().map(|val| val as *mut _ as *const _)
-//                             }
-//                             _ => panic!("Invalid Portal"),
-//                         };
-
-//                         if let Some(val) = traveler {
-//                             assert!(channel.enqueue(Some(QemuRv32VirtMessage {
-//                                 src: hart_id,
-//                                 dst: msg.src,
-//                                 body: QemuRv32VirtMessageBody::PortalResponse(
-//                                     portal_id,
-//                                     val
-//                                 ),
-//                             })));
-
-//                             unsafe {
-//                                 kernel::thread_local_static_access!(crate::clint::CLIC, DynThreadId::new(hart_id))
-//                                     .expect("This thread does not have access to CLIC")
-//                                     .enter_nonreentrant(|clic| {
-//                                         clic.set_soft_interrupt(msg.src);
-//                                     })
-//                             };
-//                         }
-//                     };
-
-//                     unsafe {
-//                         (&*core::ptr::addr_of!(PORTALS))
-//                             .get_mut()
-//                             .expect("This thread doesn't not have access to its local portals")
-//                             .enter_nonreentrant(closure);
-//                     }
-//                 }
-//                 M::PortalResponse(portal_id, traveler) => {
-//                     let closure = |ps: &mut [QemuRv32VirtPortal; NUM_PORTALS]| {
-//                         use QemuRv32VirtPortal as P;
-//                         match ps[portal_id] {
-//                             P::Uart16550(val) => {
-//                                 let portal = unsafe {
-//                                     &*(val as *const QemuRv32VirtPortalCell<crate::uart::Uart16550>)
-//                                 };
-//                                 assert!(portal.get_id() == portal_id);
-//                                 portal.link(unsafe { &mut *(traveler as *mut _) })
-//                                     .expect("Failed to link the uart portal");
-
-//                                 portal.enter(|uart| {
-//                                     uart.restore_context();
-//                                     // Enable uart interrupts
-//                                     unsafe {
-//                                         kernel::thread_local_static_access!(crate::plic::PLIC, DynThreadId::new(hart_id))
-//                                             .expect("Unable to access thread-local PLIC controller")
-//                                             .enter_nonreentrant(|plic| {
-//                                                 plic.enable(hart_id * 2, (crate::interrupts::UART0 as u32).try_into().unwrap());
-//                                             });
-//                                     }
-//                                     // Try continue from the last transmit in case of missing interrupts
-//                                     let _ = uart.try_transmit_continue();
-//                                 });
-//                             }
-//                             P::Counter(val) => {
-//                                 let portal = unsafe {
-//                                     &*(val as *const QemuRv32VirtPortalCell<usize>)
-//                                 };
-//                                 assert!(portal.get_id() == portal_id);
-//                                 portal.link(unsafe { &mut *(traveler as *mut _) })
-//                                     .expect("Failed to link the counter portal");
-//                             }
-//                             _ => panic!("Invalid Portal"),
-//                         };
-//                     };
-
-//                     unsafe {
-//                         (&*core::ptr::addr_of!(PORTALS))
-//                             .get_mut()
-//                             .expect("This thread doesn't not have access to its local portals")
-//                             .enter_nonreentrant(closure);
-//                     }
-//                 }
-//                 _ => panic!("Unsupported message"),
-//             }
-//         }
-//     }
-
-//     pub fn service_async(&self) {
-//         let old_val = self.notified.get();
-//         self.notified.set(old_val + 1);
-//     }
-
-//     pub fn has_pending_requests(&self) -> bool {
-//         self.notified.get() != 0
-//     }
-
-//     pub fn service_complete(&self) {
-//         let old_val = self.notified.get();
-//         self.notified.set(old_val - 1);
-//     }
-
-//     fn write(&mut self, message: Self::Message) -> bool {
-//         use QemuRv32VirtChannelOneWayRole as R;
-
-//         // Flush the shared buffer
-//         let shared_buffer = unsafe { &mut *self.shared_buffer.get() };
-//         shared_buffer.fill(None);
-
-//         // Copy from the local buffer to the shared buffer
-//         for item in shared_buffer.iter_mut() {
-//             if let copy @ Some(_) = self.channel.dequeue() {
-//                 *item = copy;
-//             } else {
-//                 break;
-//             }
-//         }
-
-//         // Empty the local buffer
-//         self.channel.empty();
-
-//         let role = self.role.get().expect("No role defined for the one-way channel");
-//         match role {
-//             R::Sender => {
-//                 // set fuser
-//                 // notify
-//             }
-//             R::Receiver => {
-//                 // notify
-//             }
-//         }
-//     }
-
-//     fn read(&self) -> Option<Self::Message> {
-//         let role = self.role.get().expect("No role defined for the one-way channel");
-//         match role {
-//             R::Sender => {
-//                 // defuse
-//             }
-//             R::Receiver => {
-//                 // set up alarm for response
-//             },
-//         }
-
-//         // Empty the local buffer
-//         self.channel.empty();
-
-//         // Copy from the shared buffer to the shared buffer
-//         let shared_buffer = unsafe { &mut *self.shared_buffer.get() };
-//         for item in shared_buffer.iter() {
-//             self.channel.enqueue(*item);
-//         }
-
-//         // Flush the shared buffer
-//         shared_buffer.fill(None);
-
-
-
-//         self.channel
-//             .lock()
-//             .dequeue()
-//             .map(|val| val.expect("Invalid message"))
-//     }
-// }
-
-// // --------------------------------------------------------------------------------
-
-
-// use kernel::hil::time::{self, Alarm, Frequency, Ticks, Ticks32, AlarmClient};
-
-// pub struct ClosureAlarm<'a, A: Alarm<'a>, F: Fn()> {
-//     alarm: &'a A,
-//     closure: F,
-// }
-
-// impl<'a, A: Alarm<'a>, F: Fn()> ClosureAlarm<'a, A, F> {
-//     pub const fn new(alarm: &'a A, closure: F) -> ClosureAlarm<'a, A, F> {
-//         ClosureAlarm {
-//             alarm,
-//             closure,
-//         }
-//     }
-
-//     fn disarm(&self) {
-//         if self.alarm.is_armed() {
-//             self.alarm
-//                 .disarm()
-//                 .expect("closurealarm is unable to disarm");
-//         }
-//     }
-
-//     fn set_alarm(&self, duration: usize) {
-//         self.disarm();
-//         self.alarm.set_alarm(...);
-//     }
-// }
-
-// impl<'a, A: Alarm<'a>, F: FnMut()> AlarmClient for ClosureAlarm<'a, A, F> {
-//     fn alarm(&self) {
-//         (self.closure)();
-//     }
-// }
