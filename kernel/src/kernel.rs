@@ -19,7 +19,7 @@ use crate::debug;
 use crate::deferred_call::DeferredCall;
 use crate::errorcode::ErrorCode;
 use crate::grant::{AllowRoSize, AllowRwSize, Grant, UpcallSize};
-use crate::ipc;
+use crate::ipc_new as ipc;
 use crate::memop;
 use crate::platform::chip::{Chip, ChipAtomic};
 use crate::platform::mpu::MPU;
@@ -502,7 +502,7 @@ impl Kernel {
         resources: &KR,
         chip: &C,
         process: &dyn process::Process,
-        ipc: Option<&crate::ipc::IPC<NUM_PROCS>>,
+        ipc: Option<&crate::ipc_new::IPC<NUM_PROCS>>,
         timeslice_us: Option<u32>,
     ) -> (process::StoppedExecutingReason, Option<u32>) {
         // We must use a dummy scheduler timer if the process should be executed

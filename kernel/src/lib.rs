@@ -91,6 +91,7 @@
 
 #![warn(unreachable_pub)]
 #![no_std]
+#![feature(generic_const_exprs)]
 
 /// Kernel major version.
 ///
@@ -113,7 +114,8 @@ pub mod errorcode;
 pub mod grant;
 pub mod hil;
 pub mod introspection;
-pub mod ipc;
+// pub mod ipc;
+pub mod ipc_new;
 pub mod platform;
 pub mod process;
 pub mod process_checker;

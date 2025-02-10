@@ -64,7 +64,7 @@ struct QemuRv32VirtPlatform {
         'static,
         VirtualMuxAlarm<'static, qemu_rv32_virt_chip::chip::QemuRv32VirtClint<'static>>,
     >,
-    ipc: kernel::ipc::IPC<{ NUM_PROCS as u8 }>,
+    ipc: kernel::ipc_new::IPC<{ NUM_PROCS as u8 }>,
     scheduler: &'static CooperativeSched<'static>,
     scheduler_timer: &'static VirtualSchedulerTimer<
         VirtualMuxAlarm<'static, qemu_rv32_virt_chip::chip::QemuRv32VirtClint<'static>>,
@@ -94,7 +94,7 @@ impl SyscallDriverLookup for QemuRv32VirtPlatform {
                     f(None)
                 }
             }
-            kernel::ipc::DRIVER_NUM => f(Some(&self.ipc)),
+            kernel::ipc_new::DRIVER_NUM => f(Some(&self.ipc)),
             _ => f(None),
         }
     }
@@ -639,15 +639,15 @@ pub unsafe fn spawn<const ID: usize>(
         scheduler,
         scheduler_timer,
         virtio_rng: virtio_rng_driver,
-        ipc: kernel::ipc::IPC::new(
+        ipc: kernel::ipc_new::IPC::new(
             board_kernel,
-            kernel::ipc::DRIVER_NUM,
+            kernel::ipc_new::DRIVER_NUM,
             &memory_allocation_cap,
         ),
     };
 
     // Start the process console:
-    // let _ = platform.pconsole.start();
+    let _ = platform.pconsole.start();
 
     if has_app_thread {
         use rv32i::{INITIALIZED, INITIALIZED_ACK};

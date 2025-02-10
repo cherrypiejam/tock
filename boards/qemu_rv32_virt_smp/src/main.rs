@@ -87,10 +87,10 @@ pub unsafe fn main(thread_type: ThreadType) {
 
     use ThreadType as T;
     match thread_type {
-        T::Main => threads::main_thread::spawn::<{T::Main as usize}>(channel, true),
+        T::Main => threads::main_thread::spawn::<{T::Main as usize}>(channel, false),
         T::Application => {
-            // loop {}
-            threads::app_thread::spawn::<{T::Application as usize}>(channel)
+            loop {}
+            // threads::app_thread::spawn::<{T::Application as usize}>(channel)
             // rv32i::semihost_command(0x18, 1, 0);
         },
         _ => panic!("Invalid Thread ID")

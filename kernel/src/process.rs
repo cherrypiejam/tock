@@ -12,7 +12,7 @@ use core::str;
 
 use crate::capabilities;
 use crate::errorcode::ErrorCode;
-use crate::ipc;
+use crate::ipc_new as ipc;
 use crate::kernel::Kernel;
 use crate::platform::mpu::{self};
 use crate::processbuffer::{ReadOnlyProcessBuffer, ReadWriteProcessBuffer};

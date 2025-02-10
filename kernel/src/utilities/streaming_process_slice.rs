@@ -4,7 +4,7 @@
 
 use core::ops::{Range, RangeFrom};
 
-use crate::processbuffer::WriteableProcessSlice;
+use crate::processbuffer::{WriteableProcessSlice, ReadableProcessSlice};
 use crate::utilities::registers::{register_bitfields, LocalRegisterCopy};
 use crate::ErrorCode;
 
@@ -213,8 +213,44 @@ impl<'a> StreamingProcessSlice<'a> {
     /// empty slice.
     fn payload_slice(&self) -> &WriteableProcessSlice {
         self.slice
-            .get(Self::RANGE_DATA)
+            .get_from(Self::RANGE_DATA)
             .unwrap_or((&mut [][..]).into())
+    }
+
+    pub fn append_chunk_process_slice(&self, chunk: &ReadableProcessSlice) -> Result<StreamingProcessSliceMeta, ErrorCode> {
+        // This includes general sanity checks:
+        let mut meta = self.get_meta()?;
+
+        // Check whether we are instructed to halt:
+        if meta.exceeded && meta.halt {
+            return Err(ErrorCode::BUSY);
+        }
+
+        let new_offset: u32 = (meta.offset as usize)
+            .checked_add(chunk.len())
+            .ok_or(ErrorCode::FAIL)?
+            .try_into()
+            .map_err(|_| ErrorCode::FAIL)?;
+
+        // Attempt to append the chunk to the slice, otherwise fail with SIZE:
+        if let Some(dst) = self
+            .payload_slice()
+            .get((meta.offset as usize)..(new_offset as usize))
+        {
+            // We do have sufficient space to append this chunk to the slice:
+            dst.iter().zip(chunk.iter()).for_each(|(scell, dcell)| {
+                scell.set(dcell.get())
+            });
+            meta.offset = new_offset;
+            self.set_meta(meta)?;
+            Ok(meta)
+        } else {
+            // We don't have sufficient space to append this chunk to the slice.
+            // Do not update meta.offset, but set meta.exceeded:
+            meta.exceeded = true;
+            self.set_meta(meta)?;
+            Err(ErrorCode::SIZE)
+        }
     }
 
     /// Append a chunk of data to the slice.

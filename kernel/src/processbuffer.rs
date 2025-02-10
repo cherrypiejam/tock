@@ -893,8 +893,8 @@ pub struct ProcessSliceBuffer<'a> {
 
 impl<'a> ProcessSliceBuffer<'a> {
     const RANGE_FLAGS: Range<usize> = 0..1;
-    const RANGE_OFFSET: Range<usize> = (Self::RANGE_FLAGS.end)..(Self::RANGE_FLAGS.end + 5);
-    const START_DATA: usize = Self::RANGE_OFFSET.end + 4;
+    const RANGE_OFFSET: Range<usize> = (Self::RANGE_FLAGS.end)..(Self::RANGE_FLAGS.end + 4);
+    const START_DATA: usize = Self::RANGE_OFFSET.end + 1;
 
     const FLAGS_V0: u8 = 0;
 
@@ -906,11 +906,11 @@ impl<'a> ProcessSliceBuffer<'a> {
     ///
     /// The buffer data format is described below:
     /// ```text,ignore
-    /// 0          1          2          3          4
-    /// +----------+----------+----------+----------+-------------------...
-    /// | flags    | buffer offset                  | slice
-    /// +----------+----------+----------+----------+-------------------...
-    /// | 00000000 | 32 bits little endian          | data
+    /// 0          1          2          3          4          5
+    /// +----------+----------+----------+----------+----------+-------------------...
+    /// | flags    | buffer offset                             | slice
+    /// +----------+----------+----------+----------+----------+-------------------...
+    /// | 00000000 | 32 bits little endian                     | data
     /// ```
     ///
     /// - the first byte is reserved to store flags, for this version of the buffer
@@ -937,7 +937,10 @@ impl<'a> ProcessSliceBuffer<'a> {
             .get(Self::RANGE_OFFSET)
             .ok_or(ErrorCode::SIZE)?
             .copy_to_slice_or_err(&mut offset_bytes)
-            .map_err(|_| ErrorCode::SIZE)?;
+            .map_err(|_| {
+                crate::debug!("hello ");
+                ErrorCode::SIZE
+            })?;
 
         Ok(u32::from_ne_bytes(offset_bytes) as usize)
     }
@@ -985,6 +988,49 @@ impl<'a> ProcessSliceBuffer<'a> {
             .get(current_offset..new_offset)
             .ok_or(ErrorCode::SIZE)?
             .copy_from_slice(data);
+
+        self.set_offset(current_offset + new_offset)?;
+
+        Ok(())
+    }
+
+    pub fn append_process_slice(&self, data: &ReadableProcessSlice) -> Result<(), ErrorCode> {
+
+        // This includes a check for the buffers flags:
+        let current_offset = self.offset()?;
+        let new_offset = current_offset + data.len();
+
+        // Attempt to append the data to the buffer, otherwise fail with SIZE:
+        // data.iter().for_each(|item| {
+        //     crate::debug!("Append_process_slice: -> {}", item.get());
+        // });
+        self.payload_slice()
+            .get(current_offset..new_offset)
+            .ok_or(ErrorCode::SIZE)?
+            .iter()
+            .zip(data.iter())
+            .for_each(|(scell, dcell)| {
+                scell.set(dcell.get())
+            });
+
+        // self.payload_slice()
+        //     .get(0..1)
+        //     .ok_or(ErrorCode::SIZE)?
+        //     .iter()
+        //     .map(|scell| {
+        //         todo!();
+        //         crate::debug!("PRE CHANGE -------- payload slice: -> {}", scell.get());
+        //         scell.set(12);
+        //         crate::debug!("AFT CHANGE -------- payload slice: -> {}", scell.get());
+        //     });
+
+        // self.payload_slice()
+        //     .get(current_offset..new_offset)
+        //     .ok_or(ErrorCode::SIZE)?
+        //     .iter()
+        //     .for_each(|item| {
+        //         crate::debug!("///-------- payload slice: -> {}", item.get());
+        //     });
 
         self.set_offset(current_offset + new_offset)?;
 
@@ -1062,6 +1108,8 @@ impl WriteableProcessSlice {
         // Method implemetation adopted from the
         // core::slice::copy_from_slice method implementation:
         // https://doc.rust-lang.org/src/core/slice/mod.rs.html#3034-3036
+
+        crate::debug!("self.len() != dest.len():  {}, {}", self.len(), dest.len());
 
         if self.len() != dest.len() {
             Err(ErrorCode::SIZE)
